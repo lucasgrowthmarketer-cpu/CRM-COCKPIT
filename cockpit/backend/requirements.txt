@@ -1,0 +1,27 @@
+# Industrial Decision Cockpit - backend dependencies
+# Minimal set: only what server.py actually imports + uvicorn to run it.
+
+# Web framework
+fastapi==0.110.1
+uvicorn[standard]==0.25.0
+starlette==0.37.2
+
+# Data validation
+pydantic==2.12.5
+
+# MongoDB (async driver)
+motor==3.3.1
+pymongo==4.5.0
+
+# Auth
+bcrypt==4.1.3
+PyJWT==2.12.1
+
+# Env vars
+python-dotenv==1.2.2
+
+# Excel import support (V2, already imported in server.py)
+openpyxl==3.1.5
+
+# Multipart form parsing (file uploads)
+python-multipart==0.0.24
