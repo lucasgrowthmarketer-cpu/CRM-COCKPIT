@@ -1,2 +1,0 @@
-# CRM-COCKPIT
-local
