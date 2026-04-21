@@ -29,6 +29,38 @@
     --chart-4: 38 92% 50%;
     --chart-5: 0 84% 60%;
     --radius: 0.5rem;
+    /* Brand colors as CSS vars (light theme) */
+    --brand-surface: #ffffff;
+    --brand-bg: #f5f7fa;
+    --brand-text-primary: #0f172a;
+    --brand-text-secondary: #64748b;
+    --brand-border: #e2e8f0;
+  }
+  .dark {
+    --background: 222 47% 7%;
+    --foreground: 210 40% 96%;
+    --card: 222 47% 10%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 47% 10%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 215 100% 56%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 222 47% 14%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 222 47% 14%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 22 76% 60%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 210 40% 96%;
+    --border: 222 47% 18%;
+    --input: 222 47% 18%;
+    --ring: 215 100% 56%;
+    --brand-surface: #0f172a;
+    --brand-bg: #0a0f1e;
+    --brand-text-primary: #f1f5f9;
+    --brand-text-secondary: #94a3b8;
+    --brand-border: #1e293b;
   }
 }
 
@@ -47,6 +79,58 @@
   code, pre, .font-mono, .font-jetbrains {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   }
+}
+
+/* ============================================================
+ * Dark mode: map common Tailwind utility classes used throughout
+ * the app to dark-friendly colors via CSS variables.
+ * This lets us avoid refactoring every page with dark: prefixes.
+ * ============================================================ */
+.dark .bg-white {
+  background-color: var(--brand-surface) !important;
+}
+.dark .bg-brand-surface {
+  background-color: var(--brand-surface) !important;
+}
+.dark .bg-brand-bg,
+.dark .bg-slate-50,
+.dark .bg-gray-50,
+.dark .bg-neutral-50 {
+  background-color: var(--brand-bg) !important;
+}
+.dark .text-brand-text-primary,
+.dark .text-slate-900,
+.dark .text-gray-900,
+.dark .text-black {
+  color: var(--brand-text-primary) !important;
+}
+.dark .text-brand-text-secondary,
+.dark .text-slate-600,
+.dark .text-slate-500,
+.dark .text-gray-600,
+.dark .text-gray-500 {
+  color: var(--brand-text-secondary) !important;
+}
+.dark .border-brand-border,
+.dark .border-slate-200,
+.dark .border-gray-200,
+.dark .divide-slate-200 > *,
+.dark .divide-gray-200 > * {
+  border-color: var(--brand-border) !important;
+}
+.dark .hover\:bg-brand-bg:hover,
+.dark .hover\:bg-slate-50:hover,
+.dark .hover\:bg-gray-50:hover {
+  background-color: var(--brand-bg) !important;
+}
+
+/* Transition on theme switch */
+body,
+.bg-white,
+.bg-brand-surface,
+.bg-brand-bg,
+.border-brand-border {
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 @layer base {

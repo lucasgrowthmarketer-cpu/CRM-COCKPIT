@@ -1,0 +1,10 @@
+
+# Archives de release — générées, pas versionnées
+*.zip
+
+# Données sensibles RGPD (emails de prospects)
+cockpit/data/*.xlsx
+!cockpit/data/.gitkeep
+
+# Logs temporaires
+/tmp/uvicorn.log

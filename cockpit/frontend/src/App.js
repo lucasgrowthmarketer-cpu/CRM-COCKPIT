@@ -1,6 +1,7 @@
 import React from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { ThemeProvider } from "./contexts/ThemeContext";
 import { Toaster } from "./components/ui/sonner";
 import Layout from "./components/Layout";
 import LoginPage from "./pages/LoginPage";
@@ -13,6 +14,8 @@ import OpportunitesPage from "./pages/OpportunitesPage";
 import ObjectifsPage from "./pages/ObjectifsPage";
 import TodosPage from "./pages/TodosPage";
 import ImportPage from "./pages/ImportPage";
+import PipelinePage from "./pages/PipelinePage";
+import TemplatesPage from "./pages/TemplatesPage";
 import ProfilPage from "./pages/ProfilPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 
@@ -56,12 +59,12 @@ function AppRoutes() {
       <Route path="/entreprises/:id" element={<ProtectedRoute><EntrepriseDetailPage /></ProtectedRoute>} />
       <Route path="/secteurs" element={<ProtectedRoute><SecteursPage /></ProtectedRoute>} />
       <Route path="/contacts" element={<ProtectedRoute><ContactsPage /></ProtectedRoute>} />
-      <Route path="/pipeline" element={<ProtectedRoute><PlaceholderPage title="Pipeline" /></ProtectedRoute>} />
+      <Route path="/pipeline" element={<ProtectedRoute><PipelinePage /></ProtectedRoute>} />
       <Route path="/opportunites" element={<ProtectedRoute><OpportunitesPage /></ProtectedRoute>} />
       <Route path="/objectifs" element={<ProtectedRoute><ObjectifsPage /></ProtectedRoute>} />
       <Route path="/todos" element={<ProtectedRoute><TodosPage /></ProtectedRoute>} />
       <Route path="/import" element={<ProtectedRoute><ImportPage /></ProtectedRoute>} />
-      <Route path="/templates" element={<ProtectedRoute><PlaceholderPage title="Templates" /></ProtectedRoute>} />
+      <Route path="/templates" element={<ProtectedRoute><TemplatesPage /></ProtectedRoute>} />
       <Route path="/profil" element={<ProtectedRoute><ProfilPage /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -71,10 +74,12 @@ function AppRoutes() {
 function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-        <Toaster position="top-right" />
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <AppRoutes />
+          <Toaster position="top-right" />
+        </AuthProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

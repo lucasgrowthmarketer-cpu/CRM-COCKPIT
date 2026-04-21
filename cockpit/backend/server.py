@@ -302,6 +302,10 @@ class ObjectifCreate(BaseModel):
     date_debut: str  # ISO YYYY-MM-DD
     # Objectif du mois courant (optionnel, sinon calcule lineaire)
     objectif_mensuel_courant: Optional[float] = Field(default=None, ge=0)
+    # Objectif annuel (optionnel, sinon implicite = mensuel_cible * 12)
+    objectif_annuel_cible: Optional[float] = Field(default=None, gt=0)
+    # Typical one-shot amount used for "how many deals to reach goal" calculation
+    one_shot_moyen: Optional[float] = Field(default=None, gt=0)
     libelle: Optional[str] = None
     actif: bool = True
 
@@ -311,6 +315,8 @@ class ObjectifUpdate(BaseModel):
     date_cible: Optional[str] = None
     date_debut: Optional[str] = None
     objectif_mensuel_courant: Optional[float] = Field(default=None, ge=0)
+    objectif_annuel_cible: Optional[float] = Field(default=None, gt=0)
+    one_shot_moyen: Optional[float] = Field(default=None, gt=0)
     libelle: Optional[str] = None
     actif: Optional[bool] = None
 
@@ -596,11 +602,99 @@ async def delete_secteur(secteur_id: str, user=Depends(get_current_user)):
     return {"message": "Secteur supprime"}
 
 
-# ==================== Templates Routes (basic read) ====================
+# ==================== Templates Routes (full CRUD) ====================
+
+TemplateTypeT = Literal["cold_initial", "relance_j3", "breakup_j10", "reengagement_j30"]
+
+
+class TemplateCreate(BaseModel):
+    nom: str = Field(min_length=1)
+    secteur_id: Optional[str] = None
+    type: TemplateTypeT
+    objet: str = Field(min_length=1)
+    corps: str = Field(min_length=1)
+    variables: Optional[List[str]] = []
+    version: Optional[int] = 1
+    actif: bool = True
+
+
+class TemplateUpdate(BaseModel):
+    nom: Optional[str] = Field(default=None, min_length=1)
+    secteur_id: Optional[str] = None
+    type: Optional[TemplateTypeT] = None
+    objet: Optional[str] = Field(default=None, min_length=1)
+    corps: Optional[str] = Field(default=None, min_length=1)
+    variables: Optional[List[str]] = None
+    version: Optional[int] = None
+    actif: Optional[bool] = None
+
+
+@api_router.post("/templates")
+async def create_template(data: TemplateCreate, user=Depends(get_current_user)):
+    doc = data.model_dump()
+    doc["id"] = str(uuid.uuid4())
+    doc["cree_par"] = user["nom"].split()[0].lower()
+    doc["created_at"] = datetime.now(timezone.utc).isoformat()
+    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.templates.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
 @api_router.get("/templates")
-async def list_templates(user=Depends(get_current_user)):
-    items = await db.templates.find({}, {"_id": 0}).to_list(100)
+async def list_templates(
+    type: str = "",
+    secteur_id: str = "",
+    actif_only: bool = False,
+    user=Depends(get_current_user)
+):
+    query = {}
+    if type:
+        query["type"] = type
+    if secteur_id:
+        query["secteur_id"] = secteur_id
+    if actif_only:
+        query["actif"] = True
+    items = await db.templates.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # Enrich with sector name
+    sect_ids = list({t.get("secteur_id") for t in items if t.get("secteur_id")})
+    if sect_ids:
+        sects = await db.secteurs.find({"id": {"$in": sect_ids}}, {"_id": 0}).to_list(200)
+        smap = {s["id"]: s for s in sects}
+        for t in items:
+            sid = t.get("secteur_id")
+            if sid and sid in smap:
+                t["secteur_libelle"] = smap[sid].get("libelle", "")
+                t["secteur_naf"] = smap[sid].get("naf_code", "")
     return {"data": items}
+
+
+@api_router.get("/templates/{template_id}")
+async def get_template(template_id: str, user=Depends(get_current_user)):
+    doc = await db.templates.find_one({"id": template_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Template non trouve")
+    return doc
+
+
+@api_router.put("/templates/{template_id}")
+async def update_template(template_id: str, data: TemplateUpdate, user=Depends(get_current_user)):
+    existing = await db.templates.find_one({"id": template_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Template non trouve")
+    update_data = data.model_dump(exclude_unset=True)
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.templates.update_one({"id": template_id}, {"$set": update_data})
+    updated = await db.templates.find_one({"id": template_id}, {"_id": 0})
+    return updated
+
+
+@api_router.delete("/templates/{template_id}")
+async def delete_template(template_id: str, user=Depends(get_current_user)):
+    result = await db.templates.delete_one({"id": template_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Template non trouve")
+    return {"message": "Template supprime"}
 
 
 # ==================== Contacts Routes ====================
@@ -1618,7 +1712,7 @@ async def list_tags(user=Depends(get_current_user)):
 async def admin_export(user=Depends(get_current_user)):
     """Dump all collections as JSON for backup/migration."""
     collections = ["users", "entreprises", "secteurs", "templates", "contacts",
-                   "opportunites", "interactions", "objectifs", "todos"]
+                   "opportunites", "interactions", "objectifs", "todos", "factures"]
     dump = {}
     for coll in collections:
         items = await db[coll].find({}, {"_id": 0}).to_list(10000)
@@ -1629,6 +1723,207 @@ async def admin_export(user=Depends(get_current_user)):
     dump["exported_at"] = datetime.now(timezone.utc).isoformat()
     dump["exported_by"] = user.get("email")
     return dump
+
+
+# ==================== Factures (monthly billing tracker) ====================
+# Lightweight invoice tracker for monthly revenue projection.
+# NOT a full billing system — Lucas handles invoicing in Qonto/Pennylane.
+# This module only tracks what's due / received for dashboard projection.
+
+FactureTypeT = Literal["recurrent", "one_shot"]
+FactureStatutT = Literal["prevue", "emise", "payee", "annulee"]
+
+
+class FactureCreate(BaseModel):
+    opportunite_id: str
+    mois: str  # Format YYYY-MM
+    montant: float = Field(gt=0)
+    type: FactureTypeT
+    statut: FactureStatutT = "prevue"
+    date_emission: Optional[str] = None  # ISO date
+    date_paiement: Optional[str] = None  # ISO date
+    notes: Optional[str] = None
+
+
+class FactureUpdate(BaseModel):
+    mois: Optional[str] = None
+    montant: Optional[float] = Field(default=None, gt=0)
+    type: Optional[FactureTypeT] = None
+    statut: Optional[FactureStatutT] = None
+    date_emission: Optional[str] = None
+    date_paiement: Optional[str] = None
+    notes: Optional[str] = None
+
+
+def _months_between(start_iso: str, end_iso: str) -> List[str]:
+    """Return list of 'YYYY-MM' keys from start to end inclusive."""
+    from datetime import date
+    s = date.fromisoformat(start_iso[:10])
+    e = date.fromisoformat(end_iso[:10])
+    months = []
+    y, m = s.year, s.month
+    while (y, m) <= (e.year, e.month):
+        months.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return months
+
+
+async def _generate_recurring_factures(opportunite: dict) -> int:
+    """Auto-generate monthly factures for a recurring contract.
+    Returns number of factures created. Skips existing months."""
+    if opportunite.get("type_contrat") != "recurrent":
+        return 0
+    if not opportunite.get("mrr") or not opportunite.get("date_debut_contrat"):
+        return 0
+    end = opportunite.get("date_fin_contrat") or f"{datetime.now().year}-12-31"
+    start = opportunite["date_debut_contrat"]
+    try:
+        months = _months_between(start, end)
+    except Exception:
+        return 0
+    # Check existing
+    existing = await db.factures.find(
+        {"opportunite_id": opportunite["id"], "type": "recurrent"},
+        {"_id": 0, "mois": 1}
+    ).to_list(500)
+    existing_months = {f["mois"] for f in existing}
+    created = 0
+    for mois in months:
+        if mois in existing_months:
+            continue
+        doc = {
+            "id": str(uuid.uuid4()),
+            "opportunite_id": opportunite["id"],
+            "mois": mois,
+            "montant": opportunite["mrr"],
+            "type": "recurrent",
+            "statut": "prevue",
+            "date_emission": None,
+            "date_paiement": None,
+            "notes": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.factures.insert_one(doc)
+        created += 1
+    return created
+
+
+@api_router.post("/factures")
+async def create_facture(data: FactureCreate, user=Depends(get_current_user)):
+    # Verify opportunite exists
+    opp = await db.opportunites.find_one({"id": data.opportunite_id}, {"_id": 0})
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunite non trouvee")
+    # Validate mois format
+    if not re.match(r"^\d{4}-\d{2}$", data.mois):
+        raise HTTPException(status_code=422, detail="Format mois invalide (attendu YYYY-MM)")
+    doc = data.model_dump()
+    doc["id"] = str(uuid.uuid4())
+    doc["created_at"] = datetime.now(timezone.utc).isoformat()
+    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.factures.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/factures")
+async def list_factures(
+    opportunite_id: str = "",
+    statut: str = "",
+    mois_min: str = "",
+    mois_max: str = "",
+    user=Depends(get_current_user)
+):
+    query = {}
+    if opportunite_id:
+        query["opportunite_id"] = opportunite_id
+    if statut:
+        query["statut"] = statut
+    if mois_min or mois_max:
+        mq = {}
+        if mois_min:
+            mq["$gte"] = mois_min
+        if mois_max:
+            mq["$lte"] = mois_max
+        query["mois"] = mq
+    items = await db.factures.find(query, {"_id": 0}).sort("mois", 1).to_list(2000)
+    # Enrich with opportunite + entreprise info
+    opp_ids = list({f["opportunite_id"] for f in items})
+    if opp_ids:
+        opps = await db.opportunites.find(
+            {"id": {"$in": opp_ids}}, {"_id": 0}
+        ).to_list(500)
+        opp_map = {o["id"]: o for o in opps}
+        ent_ids = list({o["entreprise_id"] for o in opps if o.get("entreprise_id")})
+        ents = await db.entreprises.find(
+            {"id": {"$in": ent_ids}}, {"_id": 0, "id": 1, "nom": 1, "proprietaire": 1}
+        ).to_list(500) if ent_ids else []
+        ent_map = {e["id"]: e for e in ents}
+        for f in items:
+            opp = opp_map.get(f["opportunite_id"])
+            if opp:
+                f["opportunite_intitule"] = opp.get("intitule")
+                f["opportunite_type"] = opp.get("type_mission")
+                ent = ent_map.get(opp.get("entreprise_id"))
+                if ent:
+                    f["entreprise_id"] = ent["id"]
+                    f["entreprise_nom"] = ent["nom"]
+                    f["proprietaire"] = ent.get("proprietaire")
+    return {"data": items}
+
+
+@api_router.get("/factures/{facture_id}")
+async def get_facture(facture_id: str, user=Depends(get_current_user)):
+    doc = await db.factures.find_one({"id": facture_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Facture non trouvee")
+    return doc
+
+
+@api_router.put("/factures/{facture_id}")
+async def update_facture(facture_id: str, data: FactureUpdate, user=Depends(get_current_user)):
+    existing = await db.factures.find_one({"id": facture_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Facture non trouvee")
+    update_data = data.model_dump(exclude_unset=True)
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # Auto-set dates on status transitions
+    if update_data.get("statut") == "emise" and not update_data.get("date_emission") and not existing.get("date_emission"):
+        update_data["date_emission"] = datetime.now(timezone.utc).date().isoformat()
+    if update_data.get("statut") == "payee" and not update_data.get("date_paiement") and not existing.get("date_paiement"):
+        update_data["date_paiement"] = datetime.now(timezone.utc).date().isoformat()
+    await db.factures.update_one({"id": facture_id}, {"$set": update_data})
+    return await db.factures.find_one({"id": facture_id}, {"_id": 0})
+
+
+@api_router.delete("/factures/{facture_id}")
+async def delete_facture(facture_id: str, user=Depends(get_current_user)):
+    result = await db.factures.delete_one({"id": facture_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Facture non trouvee")
+    return {"message": "Facture supprimee"}
+
+
+@api_router.post("/opportunites/{opportunite_id}/generate-factures")
+async def generate_factures_for_opportunite(opportunite_id: str, user=Depends(get_current_user)):
+    """Regenerate missing recurring factures for a given opportunity."""
+    opp = await db.opportunites.find_one({"id": opportunite_id}, {"_id": 0})
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunite non trouvee")
+    count = await _generate_recurring_factures(opp)
+    return {"created": count}
+
+
+@api_router.get("/factures/by-opportunite/{opportunite_id}")
+async def factures_for_opportunite(opportunite_id: str, user=Depends(get_current_user)):
+    items = await db.factures.find(
+        {"opportunite_id": opportunite_id}, {"_id": 0}
+    ).sort("mois", 1).to_list(500)
+    return {"data": items}
 
 
 # ==================== Dashboard metrics ====================
@@ -1650,82 +1945,143 @@ def _current_year() -> int:
 
 @api_router.get("/dashboard/metrics")
 async def dashboard_metrics(
-    proprietaire: str = "",  # filtre "mes donnees" vs "equipe" (empty = equipe)
+    proprietaire: str = "",
+    mode: str = "equipe",  # "equipe" | "mes_donnees" | "lucas_personnel"
     user=Depends(get_current_user)
 ):
-    """KPIs + chart data for the dashboard."""
-    # Filter for proprietaire-scoped queries
+    """Enhanced dashboard KPIs powered by factures collection for accurate monthly CA.
+
+    mode:
+      - equipe         : aucun filtre proprietaire (par defaut)
+      - mes_donnees    : filtre sur l'utilisateur connecte
+      - lucas_personnel: filtre force sur proprietaire=lucas (quel que soit l'utilisateur)
+    """
+    # Resolve proprietaire filter from mode
+    if mode == "lucas_personnel":
+        filter_proprietaire = "lucas"
+    elif mode == "mes_donnees":
+        filter_proprietaire = (user.get("nom") or "").split()[0].lower()
+        if filter_proprietaire not in ("lucas", "ayoub", "david"):
+            filter_proprietaire = ""
+    else:
+        filter_proprietaire = proprietaire  # allow direct override for backwards compat
+
     ent_filter = {"archived_at": {"$exists": False}}
     opp_filter = {}
-    if proprietaire:
-        ent_filter["proprietaire"] = proprietaire
-        opp_filter["proprietaire"] = proprietaire
+    if filter_proprietaire:
+        ent_filter["proprietaire"] = filter_proprietaire
+        opp_filter["proprietaire"] = filter_proprietaire
 
     current_month = _current_month_key()
     current_year = _current_year()
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_dt = datetime.now(timezone.utc)
 
-    # CA signe YTD: sum of ca_reel_signe for opps stade=signe this year
-    opps_signes = await db.opportunites.find(
-        {**opp_filter, "stade": "signe"},
-        {"_id": 0}
-    ).to_list(1000)
+    # ============================================================
+    # Factures-based CA computation (new authoritative source)
+    # ============================================================
+    # Load all factures, filter by proprietaire via entreprise
+    all_factures = await db.factures.find({}, {"_id": 0}).to_list(5000)
+    # Build enterprise → proprietaire map
+    all_opps = await db.opportunites.find({}, {"_id": 0}).to_list(2000)
+    opp_map = {o["id"]: o for o in all_opps}
+    ent_ids_needed = list({o.get("entreprise_id") for o in all_opps if o.get("entreprise_id")})
+    ent_map = {}
+    if ent_ids_needed:
+        ents = await db.entreprises.find(
+            {"id": {"$in": ent_ids_needed}}, {"_id": 0}
+        ).to_list(2000)
+        ent_map = {e["id"]: e for e in ents}
 
-    ca_ytd = 0.0
-    ca_mois_courant = 0.0
-    ca_par_mois = {}  # YYYY-MM -> total
-    # For MRR: sum mrr of active recurrent contracts (date_debut <= today, date_fin null or >= today)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    def facture_owner(f):
+        opp = opp_map.get(f["opportunite_id"])
+        if not opp:
+            return None
+        ent = ent_map.get(opp.get("entreprise_id"))
+        return ent.get("proprietaire") if ent else opp.get("proprietaire")
+
+    if filter_proprietaire:
+        scoped_factures = [f for f in all_factures if facture_owner(f) == filter_proprietaire]
+    else:
+        scoped_factures = all_factures
+
+    # Build CA per month from factures (statut in [emise, payee] = realized)
+    ca_realise_par_mois = {}   # YYYY-MM -> float (factures emises OR payees)
+    ca_paye_par_mois = {}       # YYYY-MM -> float (factures payees seulement)
+    ca_prevu_par_mois = {}      # YYYY-MM -> float (factures prevues)
+    for f in scoped_factures:
+        if f.get("statut") == "annulee":
+            continue
+        mois = f.get("mois", "")
+        montant = f.get("montant", 0) or 0
+        if f.get("statut") == "payee":
+            ca_paye_par_mois[mois] = ca_paye_par_mois.get(mois, 0) + montant
+            ca_realise_par_mois[mois] = ca_realise_par_mois.get(mois, 0) + montant
+        elif f.get("statut") == "emise":
+            ca_realise_par_mois[mois] = ca_realise_par_mois.get(mois, 0) + montant
+        elif f.get("statut") == "prevue":
+            ca_prevu_par_mois[mois] = ca_prevu_par_mois.get(mois, 0) + montant
+
+    # CA YTD = sum realise (emise or payee) for current year
+    ca_ytd = sum(v for m, v in ca_realise_par_mois.items() if m.startswith(str(current_year)))
+    ca_mois_courant = ca_realise_par_mois.get(current_month, 0)
+    ca_prevu_reste_annee = sum(
+        v for m, v in ca_prevu_par_mois.items()
+        if m.startswith(str(current_year)) and m >= current_month
+    )
+
+    # ============================================================
+    # MRR (active recurring contracts sum)
+    # ============================================================
     mrr_total = 0.0
     mrr_contracts = []
+    for opp in all_opps:
+        if filter_proprietaire:
+            ent = ent_map.get(opp.get("entreprise_id"))
+            if ent and ent.get("proprietaire") != filter_proprietaire:
+                continue
+        if opp.get("stade") != "signe":
+            continue
+        if opp.get("type_contrat") != "recurrent" or not opp.get("mrr"):
+            continue
+        date_debut = opp.get("date_debut_contrat") or ""
+        date_fin = opp.get("date_fin_contrat")
+        active = (not date_debut or date_debut <= today_str) and (not date_fin or date_fin >= today_str)
+        if active:
+            mrr_total += opp["mrr"]
+            ent = ent_map.get(opp.get("entreprise_id"), {})
+            mrr_contracts.append({
+                "id": opp["id"],
+                "intitule": opp.get("intitule"),
+                "entreprise_id": opp.get("entreprise_id"),
+                "entreprise_nom": ent.get("nom", ""),
+                "mrr": opp["mrr"],
+                "date_debut_contrat": date_debut,
+                "date_fin_contrat": date_fin,
+            })
 
-    for opp in opps_signes:
-        updated_at = opp.get("updated_at", "")
-        month = _month_key(updated_at)
-        montant = opp.get("ca_reel_signe") or opp.get("montant_estime", 0) or 0
-
-        if updated_at.startswith(str(current_year)):
-            ca_ytd += montant
-
-        if month == current_month:
-            ca_mois_courant += montant
-
-        if month:
-            ca_par_mois[month] = ca_par_mois.get(month, 0) + montant
-
-        # MRR calculation for recurrent
-        if opp.get("type_contrat") == "recurrent" and opp.get("mrr"):
-            date_debut = opp.get("date_debut_contrat") or ""
-            date_fin = opp.get("date_fin_contrat")
-            active = (not date_debut or date_debut <= today) and (not date_fin or date_fin >= today)
-            if active:
-                mrr_total += opp["mrr"]
-                mrr_contracts.append({
-                    "id": opp["id"],
-                    "intitule": opp.get("intitule"),
-                    "entreprise_id": opp.get("entreprise_id"),
-                    "mrr": opp["mrr"],
-                    "date_debut_contrat": date_debut,
-                    "date_fin_contrat": date_fin,
-                })
-
-    # CA mois courant inclut le MRR actif
-    ca_mois_courant_total = ca_mois_courant + mrr_total
-
-    # Pipeline pondere: sum montant_pondere of non-closed opps
-    opps_pipeline = await db.opportunites.find(
-        {**opp_filter, "stade": {"$nin": ["signe", "perdu"]}},
-        {"_id": 0}
-    ).to_list(1000)
+    # ============================================================
+    # Pipeline pondere
+    # ============================================================
+    opps_pipeline = [
+        o for o in all_opps
+        if (not filter_proprietaire or (ent_map.get(o.get("entreprise_id"), {}).get("proprietaire") == filter_proprietaire))
+        and o.get("stade") not in ("signe", "perdu")
+    ]
     ca_pondere_pipeline = sum(o.get("montant_pondere", 0) or 0 for o in opps_pipeline)
 
-    # Prospects actifs: entreprises non archivees, statut != froid/signe/perdu
+    # ============================================================
+    # Prospects actifs
+    # ============================================================
     prospects_actifs = await db.entreprises.count_documents({
         **ent_filter,
         "statut_pipeline": {"$nin": ["froid", "signe", "perdu"]}
     })
 
-    # Taux de conversion 30j: signes ces 30 derniers jours / contactes ces 30 derniers jours
-    d30 = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    # ============================================================
+    # Taux conversion 30j
+    # ============================================================
+    d30 = (today_dt - timedelta(days=30)).isoformat()
     signes_30j = await db.opportunites.count_documents({
         **opp_filter, "stade": "signe", "updated_at": {"$gte": d30}
     })
@@ -1736,54 +2092,56 @@ async def dashboard_metrics(
     })
     taux_conversion = round(signes_30j / contactes_30j * 100, 1) if contactes_30j > 0 else 0
 
-    # 12 months rolling chart
-    months_rolling = []
-    now = datetime.now(timezone.utc)
-    for i in range(11, -1, -1):
-        dt = now.replace(day=1) - timedelta(days=i * 30)
-        key = dt.strftime("%Y-%m")
-        # adjust to actual month boundaries (approximation via day=1 + i*30 has drift)
-        months_rolling.append(key)
-    # Dedupe while preserving order (rare drift edge case)
-    seen = set()
-    months_clean = []
-    for m in months_rolling:
-        if m not in seen:
-            months_clean.append(m)
-            seen.add(m)
-    # Build chart data
-    chart_ca_par_mois = [{"mois": m, "ca": round(ca_par_mois.get(m, 0), 2)} for m in months_clean]
+    # ============================================================
+    # Chart: 12 mois glissants (current year) with realized + projection
+    # ============================================================
+    months_list = []
+    now = today_dt
+    # Build 12 months of current year (jan to dec)
+    for m in range(1, 13):
+        months_list.append(f"{current_year}-{m:02d}")
 
-    # Funnel pipeline by stade (non-closed)
+    chart_data = []
+    for mkey in months_list:
+        realise = ca_realise_par_mois.get(mkey, 0)
+        prevu = ca_prevu_par_mois.get(mkey, 0)
+        chart_data.append({
+            "mois": mkey,
+            "realise": round(realise, 2),
+            "prevu": round(prevu, 2),
+            "total": round(realise + prevu, 2),
+            "is_past": mkey < current_month,
+            "is_current": mkey == current_month,
+        })
+
+    # ============================================================
+    # Funnel
+    # ============================================================
     stages = ["qualification", "diagnostic", "propale", "negociation"]
     funnel = []
     for s in stages:
-        opps_at_stage = [o for o in opps_pipeline if o.get("stade") == s]
+        opps_at = [o for o in opps_pipeline if o.get("stade") == s]
         funnel.append({
             "stade": s,
-            "count": len(opps_at_stage),
-            "montant_pondere": round(sum(o.get("montant_pondere", 0) or 0 for o in opps_at_stage), 2)
+            "count": len(opps_at),
+            "montant_pondere": round(sum(o.get("montant_pondere", 0) or 0 for o in opps_at), 2)
         })
 
     # Top 5 opportunites ponderees
     top_opps = sorted(opps_pipeline, key=lambda o: o.get("montant_pondere", 0) or 0, reverse=True)[:5]
-    ent_ids_top = list(set(o.get("entreprise_id") for o in top_opps if o.get("entreprise_id")))
-    ent_map = {}
-    if ent_ids_top:
-        ents_found = await db.entreprises.find({"id": {"$in": ent_ids_top}}, {"_id": 0, "id": 1, "nom": 1}).to_list(200)
-        ent_map = {e["id"]: e["nom"] for e in ents_found}
     for o in top_opps:
-        o["entreprise_nom"] = ent_map.get(o.get("entreprise_id"), "")
+        ent = ent_map.get(o.get("entreprise_id"))
+        o["entreprise_nom"] = ent.get("nom", "") if ent else ""
 
-    # A relancer: entreprises actives sans interaction recente (> 14j)
-    d14 = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    # ============================================================
+    # A relancer (unchanged)
+    # ============================================================
+    d14 = (today_dt - timedelta(days=14)).isoformat()
     active_statuts = ["qualifie", "contacte", "en_conversation", "diagnostic_envoye", "propale"]
     active_ents = await db.entreprises.find(
         {**ent_filter, "statut_pipeline": {"$in": active_statuts}},
         {"_id": 0}
     ).to_list(500)
-
-    # For each, get last interaction date
     ent_ids_active = [e["id"] for e in active_ents]
     last_int_map = {}
     if ent_ids_active:
@@ -1794,39 +2152,132 @@ async def dashboard_metrics(
         ]
         last_ints = await db.interactions.aggregate(pipeline).to_list(500)
         last_int_map = {li["_id"]: li["last_date"] for li in last_ints}
-
     a_relancer = []
     for e in active_ents:
         last_date = last_int_map.get(e["id"])
         reference_date = last_date or e.get("created_at", "")
         if reference_date and reference_date < d14:
+            try:
+                jours = (today_dt - datetime.fromisoformat(reference_date.replace("Z", "+00:00"))).days
+            except Exception:
+                jours = None
             a_relancer.append({
                 "id": e["id"],
                 "nom": e["nom"],
                 "statut_pipeline": e["statut_pipeline"],
                 "proprietaire": e.get("proprietaire"),
                 "date_derniere_interaction": last_date,
-                "jours_depuis": (datetime.now(timezone.utc) - datetime.fromisoformat(reference_date.replace("Z", "+00:00"))).days if reference_date else None,
+                "jours_depuis": jours,
             })
     a_relancer.sort(key=lambda x: x.get("date_derniere_interaction") or "")
 
+    # ============================================================
+    # Dernier one-shot signé + countdown prochain cible
+    # ============================================================
+    one_shots_signes = [
+        o for o in all_opps
+        if o.get("stade") == "signe"
+        and o.get("type_contrat") in (None, "one_shot")
+        and (not filter_proprietaire or ent_map.get(o.get("entreprise_id"), {}).get("proprietaire") == filter_proprietaire)
+    ]
+    one_shots_signes.sort(key=lambda o: o.get("updated_at", ""), reverse=True)
+    dernier_one_shot = None
+    jours_depuis_dernier = None
+    jours_jusqu_cible = None
+    cible_prochain_one_shot = None
+    if one_shots_signes:
+        last = one_shots_signes[0]
+        ent = ent_map.get(last.get("entreprise_id"), {})
+        try:
+            last_date = datetime.fromisoformat(last.get("updated_at", "").replace("Z", "+00:00"))
+            jours_depuis_dernier = (today_dt - last_date).days
+            cible_dt = last_date + timedelta(days=60)
+            cible_prochain_one_shot = cible_dt.date().isoformat()
+            jours_jusqu_cible = (cible_dt - today_dt).days
+        except Exception:
+            pass
+        dernier_one_shot = {
+            "id": last["id"],
+            "intitule": last.get("intitule"),
+            "entreprise_nom": ent.get("nom", ""),
+            "montant": last.get("ca_reel_signe") or last.get("montant_estime", 0) or 0,
+            "date_signature": last.get("updated_at", "")[:10],
+        }
+
+    # ============================================================
+    # Objectif actif + projections
+    # ============================================================
+    obj_actif = await db.objectifs.find_one({"actif": True}, {"_id": 0})
+    objectif_info = None
+    if obj_actif:
+        mensuel_cible = obj_actif.get("objectif_mensuel_cible", 0) or 0
+        annuel_implicite = mensuel_cible * 12
+        annuel_override = obj_actif.get("objectif_annuel_cible")
+        annuel = annuel_override if annuel_override else annuel_implicite
+        manquant = max(0, annuel - ca_ytd - ca_prevu_reste_annee)
+        one_shot_unit = 4250  # mid of 3500-5000 per Lucas definition
+        one_shots_requis = int((manquant + one_shot_unit - 1) // one_shot_unit) if manquant > 0 else 0
+        objectif_info = {
+            "id": obj_actif["id"],
+            "libelle": obj_actif.get("libelle"),
+            "mensuel_cible": mensuel_cible,
+            "annuel_cible": annuel,
+            "date_cible": obj_actif.get("date_cible"),
+            "ca_ytd": round(ca_ytd, 2),
+            "ca_prevu_reste_annee": round(ca_prevu_reste_annee, 2),
+            "manquant": round(manquant, 2),
+            "one_shots_requis": one_shots_requis,
+            "pct_realise": round((ca_ytd / annuel * 100) if annuel > 0 else 0, 1),
+            "pct_projete": round(((ca_ytd + ca_prevu_reste_annee) / annuel * 100) if annuel > 0 else 0, 1),
+        }
+
+    # ============================================================
+    # Notifications
+    # ============================================================
+    notifications = []
+    # 1st-10th of month: check if there are prevue factures from last month not yet emise
+    if today_dt.day <= 10:
+        last_month_dt = today_dt.replace(day=1) - timedelta(days=1)
+        last_month_key = last_month_dt.strftime("%Y-%m")
+        unsent = [
+            f for f in scoped_factures
+            if f.get("mois") == last_month_key and f.get("statut") == "prevue"
+        ]
+        if unsent:
+            notifications.append({
+                "type": "factures_a_lancer",
+                "severity": "warning",
+                "message": f"{len(unsent)} facture(s) du mois dernier a emettre",
+                "count": len(unsent),
+            })
+
     return {
+        "mode": mode,
         "kpi": {
             "ca_ytd": round(ca_ytd, 2),
-            "ca_mois_courant": round(ca_mois_courant_total, 2),
-            "ca_mois_courant_one_shot": round(ca_mois_courant, 2),
+            "ca_mois_courant": round(ca_mois_courant + mrr_total, 2),
+            "ca_mois_courant_realise": round(ca_mois_courant, 2),
             "mrr_total": round(mrr_total, 2),
             "ca_pondere_pipeline": round(ca_pondere_pipeline, 2),
+            "ca_prevu_reste_annee": round(ca_prevu_reste_annee, 2),
             "prospects_actifs": prospects_actifs,
             "taux_conversion_30j": taux_conversion,
             "signes_30j": signes_30j,
             "contactes_30j": contactes_30j,
         },
-        "chart_ca_par_mois": chart_ca_par_mois,
+        "chart_ca_par_mois": chart_data,
         "funnel": funnel,
         "top_opportunites": top_opps,
-        "a_relancer": a_relancer[:20],  # cap at 20
+        "a_relancer": a_relancer[:20],
         "mrr_contracts": mrr_contracts,
+        "one_shot_tracker": {
+            "dernier": dernier_one_shot,
+            "jours_depuis_dernier": jours_depuis_dernier,
+            "cible_prochain": cible_prochain_one_shot,
+            "jours_jusqu_cible": jours_jusqu_cible,
+        },
+        "objectif": objectif_info,
+        "notifications": notifications,
     }
 
 

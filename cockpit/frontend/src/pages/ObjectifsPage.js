@@ -27,6 +27,8 @@ const plusMonths = (n) => {
 
 const EMPTY_FORM = {
   objectif_mensuel_cible: '',
+  objectif_annuel_cible: '',
+  one_shot_moyen: '',
   date_debut: today(),
   date_cible: plusMonths(6),
   objectif_mensuel_courant: '',
@@ -66,6 +68,8 @@ export default function ObjectifsPage() {
     setEditingId(o.id);
     setForm({
       objectif_mensuel_cible: String(o.objectif_mensuel_cible),
+      objectif_annuel_cible: o.objectif_annuel_cible != null ? String(o.objectif_annuel_cible) : '',
+      one_shot_moyen: o.one_shot_moyen != null ? String(o.one_shot_moyen) : '',
       date_debut: o.date_debut || today(),
       date_cible: o.date_cible || plusMonths(6),
       objectif_mensuel_courant: o.objectif_mensuel_courant != null ? String(o.objectif_mensuel_courant) : '',
@@ -94,6 +98,8 @@ export default function ObjectifsPage() {
         actif: form.actif,
       };
       if (form.objectif_mensuel_courant) payload.objectif_mensuel_courant = parseFloat(form.objectif_mensuel_courant);
+      if (form.objectif_annuel_cible) payload.objectif_annuel_cible = parseFloat(form.objectif_annuel_cible);
+      if (form.one_shot_moyen) payload.one_shot_moyen = parseFloat(form.one_shot_moyen);
       if (form.libelle) payload.libelle = form.libelle;
       if (editingId) {
         await api.put(`/objectifs/${editingId}`, payload);
@@ -281,6 +287,36 @@ export default function ObjectifsPage() {
               <p className="text-xs text-brand-text-secondary font-inter">
                 Si rempli, la barre du dashboard utilise cette valeur pour le mois courant au lieu de la cible finale.
               </p>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="font-inter">Objectif annuel (optionnel)</Label>
+                <Input
+                  type="number" min={0} step={1000}
+                  value={form.objectif_annuel_cible}
+                  onChange={(e) => setForm({ ...form, objectif_annuel_cible: e.target.value })}
+                  placeholder="40000"
+                  className="font-inter"
+                  data-testid="objectif-annuel"
+                />
+                <p className="text-xs text-brand-text-secondary font-inter">
+                  Défaut : mensuel × 12.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label className="font-inter">One-shot moyen (€)</Label>
+                <Input
+                  type="number" min={0} step={100}
+                  value={form.one_shot_moyen}
+                  onChange={(e) => setForm({ ...form, one_shot_moyen: e.target.value })}
+                  placeholder="4250"
+                  className="font-inter"
+                  data-testid="objectif-oneshot"
+                />
+                <p className="text-xs text-brand-text-secondary font-inter">
+                  Sert à calculer combien de deals manquent.
+                </p>
+              </div>
             </div>
             <label className="flex items-center gap-2 cursor-pointer">
               <input
