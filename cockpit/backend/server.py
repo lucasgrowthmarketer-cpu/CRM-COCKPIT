@@ -2281,6 +2281,276 @@ async def dashboard_metrics(
     }
 
 
+# ==================== Outreach Module ====================
+
+class OutreachMarkSent(BaseModel):
+    entreprise_ids: List[str]
+    note: Optional[str] = None  # optional comment to attach to interaction
+
+
+@api_router.get("/outreach/queue")
+async def outreach_queue(
+    user: dict = Depends(get_current_user),
+    secteur: Optional[str] = None,
+    region: Optional[str] = None,
+    dept_code: Optional[str] = None,
+    priorite: Optional[str] = None,  # HAUTE / MOYENNE / BASSE
+    statut_pipeline: Optional[str] = None,  # default = froid + contacte
+    source: Optional[str] = None,  # brevo / relance_linkedin / breakup / reengagement / cold_email
+    limit: int = 200,
+):
+    """
+    List entreprises that have a ready-to-send email_outreach payload.
+    Filters: secteur, region, dept_code, priorite, statut_pipeline, source.
+    Returns each entry with the primary contact info attached.
+    """
+    query: dict = {
+        "email_outreach": {"$exists": True, "$ne": None},
+    }
+    if secteur:
+        query["secteur"] = secteur
+    if region:
+        query["region"] = region
+    if dept_code:
+        query["dept_code"] = dept_code
+    if priorite:
+        query["priorite"] = priorite
+    if statut_pipeline:
+        query["statut_pipeline"] = statut_pipeline
+    else:
+        # Default: only show prospects not yet won/lost
+        query["statut_pipeline"] = {"$in": ["froid", "qualifie", "contacte", "en_conversation"]}
+    if source:
+        query["email_outreach.source"] = source
+
+    cursor = db.entreprises.find(query, {"_id": 0}).limit(limit)
+    entreprises = await cursor.to_list(length=limit)
+
+    # For each entreprise, attach the primary contact (first one)
+    enriched = []
+    for ent in entreprises:
+        contact = await db.contacts.find_one(
+            {"entreprise_id": ent["id"]},
+            {"_id": 0}
+        )
+        ent["contact_principal"] = contact
+        enriched.append(ent)
+
+    # Sort: priorite HAUTE first, then MOYENNE, BASSE, None
+    priorite_order = {"HAUTE": 0, "MOYENNE": 1, "BASSE": 2, None: 3}
+    enriched.sort(key=lambda x: (
+        priorite_order.get(x.get("priorite"), 3),
+        x.get("nom", "").lower()
+    ))
+
+    return {
+        "data": enriched,
+        "total": len(enriched),
+        "filters_applied": {
+            "secteur": secteur,
+            "region": region,
+            "dept_code": dept_code,
+            "priorite": priorite,
+            "statut_pipeline": statut_pipeline,
+            "source": source,
+        }
+    }
+
+
+@api_router.get("/outreach/stats")
+async def outreach_stats(user: dict = Depends(get_current_user)):
+    """Aggregate counts to power the Outreach page filters/dashboard."""
+    # Total ready-to-send
+    total = await db.entreprises.count_documents({
+        "email_outreach": {"$exists": True, "$ne": None},
+    })
+    # By statut_pipeline
+    by_statut = {}
+    for st in ["froid", "qualifie", "contacte", "en_conversation", "diagnostic_envoye", "propale", "signe", "perdu"]:
+        n = await db.entreprises.count_documents({
+            "email_outreach": {"$exists": True, "$ne": None},
+            "statut_pipeline": st,
+        })
+        if n > 0:
+            by_statut[st] = n
+
+    # By secteur
+    pipeline = [
+        {"$match": {"email_outreach": {"$exists": True, "$ne": None}, "secteur": {"$ne": None}}},
+        {"$group": {"_id": "$secteur", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]
+    by_secteur = {}
+    async for doc in db.entreprises.aggregate(pipeline):
+        if doc["_id"]:
+            by_secteur[doc["_id"]] = doc["count"]
+
+    # By region
+    pipeline = [
+        {"$match": {"email_outreach": {"$exists": True, "$ne": None}, "region": {"$ne": None}}},
+        {"$group": {"_id": "$region", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]
+    by_region = {}
+    async for doc in db.entreprises.aggregate(pipeline):
+        if doc["_id"]:
+            by_region[doc["_id"]] = doc["count"]
+
+    # By priorite
+    pipeline = [
+        {"$match": {"email_outreach": {"$exists": True, "$ne": None}, "priorite": {"$ne": None}}},
+        {"$group": {"_id": "$priorite", "count": {"$sum": 1}}},
+    ]
+    by_priorite = {}
+    async for doc in db.entreprises.aggregate(pipeline):
+        if doc["_id"]:
+            by_priorite[doc["_id"]] = doc["count"]
+
+    # By source
+    pipeline = [
+        {"$match": {"email_outreach": {"$exists": True, "$ne": None}}},
+        {"$group": {"_id": "$email_outreach.source", "count": {"$sum": 1}}},
+    ]
+    by_source = {}
+    async for doc in db.entreprises.aggregate(pipeline):
+        if doc["_id"]:
+            by_source[doc["_id"]] = doc["count"]
+
+    return {
+        "total_ready": total,
+        "by_statut_pipeline": by_statut,
+        "by_secteur": by_secteur,
+        "by_region": by_region,
+        "by_priorite": by_priorite,
+        "by_source": by_source,
+    }
+
+
+@api_router.post("/outreach/mark-sent")
+async def outreach_mark_sent(
+    payload: OutreachMarkSent,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Mark a batch of entreprises as 'contacte' and create one interaction per entreprise.
+    Used after exporting the CSV to Brevo to update the cockpit's pipeline.
+    """
+    if not payload.entreprise_ids:
+        raise HTTPException(status_code=400, detail="entreprise_ids is empty")
+
+    now = datetime.now(timezone.utc).isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
+    interactions_created = 0
+    statuses_updated = 0
+
+    for ent_id in payload.entreprise_ids:
+        # Update statut_pipeline only if it's currently "froid" (don't downgrade)
+        result = await db.entreprises.update_one(
+            {"id": ent_id, "statut_pipeline": "froid"},
+            {"$set": {"statut_pipeline": "contacte", "updated_at": now}}
+        )
+        if result.modified_count:
+            statuses_updated += 1
+
+        # Always create an interaction (even if statut was already "contacte")
+        ent = await db.entreprises.find_one({"id": ent_id}, {"_id": 0, "email_outreach": 1, "nom": 1})
+        if not ent:
+            continue
+        outreach = ent.get("email_outreach") or {}
+        source = outreach.get("source", "outreach")
+
+        await db.interactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "entreprise_id": ent_id,
+            "type": "email_envoye",
+            "date": today,
+            "objet": outreach.get("objet", "Cold email Brevo"),
+            "compte_rendu": payload.note or f"Email envoyé via Brevo (campagne {source})",
+            "auteur": user.get("nom", "Lucas"),
+            "created_at": now,
+            "updated_at": now,
+        })
+        interactions_created += 1
+
+    return {
+        "ok": True,
+        "statuses_updated": statuses_updated,
+        "interactions_created": interactions_created,
+    }
+
+
+@api_router.get("/outreach/export-csv")
+async def outreach_export_csv(
+    user: dict = Depends(get_current_user),
+    ids: Optional[str] = None,  # comma-separated entreprise ids
+    secteur: Optional[str] = None,
+    region: Optional[str] = None,
+    priorite: Optional[str] = None,
+    source: Optional[str] = None,
+    limit: int = 200,
+):
+    """
+    Export a Brevo-compatible CSV of outreach-ready entreprises.
+    Columns: EMAIL, PRENOM, NOM, SOCIETE, VILLE, SEGMENT, OBJET_EMAIL, CORPS_EMAIL.
+
+    If `ids` is provided, only those entreprises are exported (priority over filters).
+    """
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    if ids:
+        id_list = [i.strip() for i in ids.split(",") if i.strip()]
+        query = {"id": {"$in": id_list}, "email_outreach": {"$exists": True, "$ne": None}}
+    else:
+        query = {"email_outreach": {"$exists": True, "$ne": None}}
+        if secteur: query["secteur"] = secteur
+        if region: query["region"] = region
+        if priorite: query["priorite"] = priorite
+        if source: query["email_outreach.source"] = source
+        # Default to froid only if no specific ids
+        query["statut_pipeline"] = "froid"
+
+    cursor = db.entreprises.find(query, {"_id": 0}).limit(limit)
+    entreprises = await cursor.to_list(length=limit)
+
+    # Build CSV
+    output = io.StringIO()
+    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
+    writer.writerow(["EMAIL", "PRENOM", "NOM", "SOCIETE", "VILLE", "SEGMENT", "OBJET_EMAIL", "CORPS_EMAIL"])
+
+    for ent in entreprises:
+        outreach = ent.get("email_outreach") or {}
+        # Get primary contact for prenom/nom/email if available
+        contact = await db.contacts.find_one({"entreprise_id": ent["id"]}, {"_id": 0})
+        email = (outreach.get("email_target") or
+                 (contact.get("email") if contact else "") or "")
+        prenom = contact.get("prenom", "") if contact else ""
+        nom = contact.get("nom", "") if contact else ""
+
+        writer.writerow([
+            email,
+            prenom,
+            nom,
+            ent.get("nom", ""),
+            ent.get("ville", ""),
+            ent.get("secteur", ""),
+            outreach.get("objet", ""),
+            outreach.get("corps", ""),
+        ])
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel
+    filename = f"brevo_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ==================== END Outreach Module ====================
+
 # ==================== Seed Data ====================
 async def seed_data():
     try:
