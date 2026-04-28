@@ -220,7 +220,11 @@ export default function EntrepriseDetailPage() {
                   </Select>
                 </div>
               ) : (
-                <FieldDisplay label="Secteur" value={entreprise.secteur?.libelle} />
+                <FieldDisplay label="Secteur" value={
+                  // Support both new format (string) and legacy (object {libelle})
+                  typeof entreprise.secteur === 'string' ? entreprise.secteur :
+                    entreprise.secteur?.libelle || entreprise.secteur_libelle
+                } />
               )}
 
               <Field label="CA" editing={editing} value={editData.ca ?? ''}
@@ -229,6 +233,10 @@ export default function EntrepriseDetailPage() {
                 onChange={v => setEditData({...editData, effectif: v})} display={entreprise.effectif} type="number" />
               <Field label="Ville" editing={editing} value={editData.ville || ''}
                 onChange={v => setEditData({...editData, ville: v})} display={entreprise.ville} />
+
+              {entreprise.dept_code && !editing ? (
+                <FieldDisplay label="Departement" value={entreprise.dept_code} mono />
+              ) : null}
 
               {editing ? (
                 <div className="space-y-1">
@@ -302,6 +310,9 @@ export default function EntrepriseDetailPage() {
 
         {/* Right Column - Tabs */}
         <div className="lg:col-span-2">
+          {/* Outreach card - shows ready-to-send email and metadata */}
+          <OutreachCard entreprise={entreprise} onMarkSent={() => fetchEntreprise()} />
+
           <div className="bg-white rounded-lg border border-brand-border shadow-sm">
             <Tabs defaultValue="contacts" className="w-full">
               <TabsList className="w-full justify-start border-b border-brand-border rounded-none bg-transparent h-auto p-0">
@@ -797,6 +808,158 @@ function FieldDisplay({ label, value, mono, link, capitalize }) {
           {displayVal}
         </p>
       )}
+    </div>
+  );
+}
+
+// ==================== Outreach Card Component ====================
+const SOURCE_LABELS = {
+  brevo: { label: 'Brevo (cold email)', color: 'bg-blue-100 text-blue-700' },
+  cold_email: { label: 'Cold email', color: 'bg-blue-100 text-blue-700' },
+  relance_linkedin: { label: 'Relance LinkedIn', color: 'bg-purple-100 text-purple-700' },
+  breakup: { label: 'Email breakup', color: 'bg-orange-100 text-orange-700' },
+  reengagement: { label: 'Re-engagement', color: 'bg-green-100 text-green-700' },
+};
+
+const PRIORITE_COLORS = {
+  HAUTE:   'bg-red-100 text-red-700 border-red-300',
+  MOYENNE: 'bg-amber-100 text-amber-700 border-amber-300',
+  BASSE:   'bg-slate-100 text-slate-600 border-slate-300',
+};
+
+function OutreachCard({ entreprise, onMarkSent }) {
+  const outreach = entreprise.email_outreach;
+  if (!outreach || !outreach.objet) return null;
+
+  const sourceMeta = SOURCE_LABELS[outreach.source] || { label: outreach.source, color: 'bg-slate-100 text-slate-600' };
+
+  const copyToClipboard = (text, label) => {
+    navigator.clipboard.writeText(text).then(
+      () => toast.success(`${label} copié`),
+      () => toast.error('Erreur copie')
+    );
+  };
+
+  const copyFullEmail = () => {
+    const fullText = `À : ${outreach.email_target || ''}\nObjet : ${outreach.objet}\n\n${outreach.corps}`;
+    copyToClipboard(fullText, 'Email complet');
+  };
+
+  const markAsSent = async () => {
+    if (!window.confirm(`Marquer ${entreprise.nom} comme contacté ?\n\nUne interaction sera créée avec l'objet "${outreach.objet}".`)) return;
+    try {
+      await api.post('/outreach/mark-sent', {
+        entreprise_ids: [entreprise.id],
+        note: `Email "${outreach.objet}" envoyé via ${sourceMeta.label}`,
+      });
+      toast.success('Marqué comme contacté');
+      if (onMarkSent) onMarkSent();
+    } catch (err) {
+      toast.error(formatApiError(err));
+    }
+  };
+
+  return (
+    <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm mb-4 overflow-hidden">
+      <div className="p-5 border-b border-blue-200 flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <Mail className="w-4 h-4 text-brand-primary" />
+            <h3 className="font-manrope font-bold text-base text-brand-text-primary">Email outreach prêt à envoyer</h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge className={`${sourceMeta.color} border-0 text-xs font-inter`}>{sourceMeta.label}</Badge>
+            {entreprise.priorite && (
+              <Badge className={`${PRIORITE_COLORS[entreprise.priorite]} border text-xs font-inter font-semibold`}>
+                Priorité {entreprise.priorite}
+              </Badge>
+            )}
+            {entreprise.statut_relance && (
+              <Badge className="bg-white text-brand-text-secondary border border-brand-border text-xs font-inter">
+                {entreprise.statut_relance}
+              </Badge>
+            )}
+            {entreprise.canal_premier_contact && (
+              <span className="text-xs text-brand-text-secondary font-inter">
+                · {entreprise.canal_premier_contact}
+              </span>
+            )}
+          </div>
+          {entreprise.notes_specifiques && (
+            <p className="text-xs text-brand-text-secondary font-inter italic mt-2">
+              📝 {entreprise.notes_specifiques}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-col gap-1.5 shrink-0">
+          {entreprise.statut_pipeline === 'froid' && (
+            <Button
+              size="sm"
+              onClick={markAsSent}
+              className="bg-brand-primary hover:bg-brand-primary-hover text-white font-inter text-xs"
+              data-testid="outreach-mark-sent"
+            >
+              Marquer envoyé
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={copyFullEmail}
+            className="font-inter text-xs border-brand-border bg-white"
+            data-testid="outreach-copy-email"
+          >
+            Copier email
+          </Button>
+        </div>
+      </div>
+
+      <div className="p-5 space-y-3">
+        {outreach.email_target && (
+          <div className="flex items-baseline gap-2">
+            <span className="text-xs font-inter text-brand-text-secondary uppercase shrink-0">À</span>
+            <code className="text-xs bg-white px-2 py-1 rounded border border-blue-200 font-mono">
+              {outreach.email_target}
+            </code>
+            <button
+              onClick={() => copyToClipboard(outreach.email_target, 'Email')}
+              className="text-xs text-brand-primary hover:underline font-inter"
+            >
+              Copier
+            </button>
+          </div>
+        )}
+
+        <div>
+          <div className="flex items-baseline justify-between gap-2 mb-1">
+            <span className="text-xs font-inter text-brand-text-secondary uppercase">Objet</span>
+            <button
+              onClick={() => copyToClipboard(outreach.objet, 'Objet')}
+              className="text-xs text-brand-primary hover:underline font-inter"
+            >
+              Copier
+            </button>
+          </div>
+          <p className="text-sm font-inter font-medium text-brand-text-primary bg-white border border-blue-200 rounded px-3 py-2">
+            {outreach.objet}
+          </p>
+        </div>
+
+        <div>
+          <div className="flex items-baseline justify-between gap-2 mb-1">
+            <span className="text-xs font-inter text-brand-text-secondary uppercase">Corps</span>
+            <button
+              onClick={() => copyToClipboard(outreach.corps, 'Corps')}
+              className="text-xs text-brand-primary hover:underline font-inter"
+            >
+              Copier
+            </button>
+          </div>
+          <pre className="text-xs font-inter whitespace-pre-wrap text-brand-text-primary bg-white border border-blue-200 rounded px-3 py-2 max-h-64 overflow-y-auto leading-relaxed">
+            {outreach.corps}
+          </pre>
+        </div>
+      </div>
     </div>
   );
 }
