@@ -13,6 +13,8 @@ import ContactsPage from "./pages/ContactsPage";
 import OpportunitesPage from "./pages/OpportunitesPage";
 import ObjectifsPage from "./pages/ObjectifsPage";
 import TodosPage from "./pages/TodosPage";
+import TasksPage from "./pages/TasksPage";
+import OffresCataloguePage from "./pages/OffresCataloguePage";
 import ImportPage from "./pages/ImportPage";
 import PipelinePage from "./pages/PipelinePage";
 import TemplatesPage from "./pages/TemplatesPage";
@@ -63,8 +65,10 @@ function AppRoutes() {
       <Route path="/opportunites" element={<ProtectedRoute><OpportunitesPage /></ProtectedRoute>} />
       <Route path="/objectifs" element={<ProtectedRoute><ObjectifsPage /></ProtectedRoute>} />
       <Route path="/todos" element={<ProtectedRoute><TodosPage /></ProtectedRoute>} />
+      <Route path="/tasks" element={<ProtectedRoute><TasksPage /></ProtectedRoute>} />
       <Route path="/import" element={<ProtectedRoute><ImportPage /></ProtectedRoute>} />
       <Route path="/templates" element={<ProtectedRoute><TemplatesPage /></ProtectedRoute>} />
+      <Route path="/offres" element={<ProtectedRoute><OffresCataloguePage /></ProtectedRoute>} />
       <Route path="/profil" element={<ProtectedRoute><ProfilPage /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

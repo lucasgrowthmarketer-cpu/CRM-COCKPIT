@@ -14,3 +14,9 @@ cockpit_full/
 CRM-COCKPIT-backup-*/
 cockpit_v2/
 *.before-tasks-plaquette
+
+# Backups locaux des fichiers avant migration tasks/plaquette
+*.before-tasks-plaquette
+
+# Frontend env local (URL Codespaces, ne pas commit)
+cockpit/frontend/.env.local

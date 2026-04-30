@@ -17,6 +17,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from '../components/ui/dialog';
 import { toast } from 'sonner';
+import MesActionsCard from '../components/MesActionsCard';
 
 const formatEUR = (n) => {
   if (n == null || isNaN(n)) return '—';
@@ -155,8 +156,11 @@ export default function DashboardPage() {
               {opt.label}
             </button>
           ))}
-        </div>
+       </div>
       </div>
+
+      {/* Mes actions du jour (Tasks + Todos) */}
+      <MesActionsCard />
 
       {/* Notifications banner */}
       {notifications.length > 0 && (
