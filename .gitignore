@@ -8,3 +8,9 @@ cockpit/data/*.xlsx
 
 # Logs temporaires
 /tmp/uvicorn.log
+
+# Source d'intégration — ne pas commit
+cockpit_full/
+CRM-COCKPIT-backup-*/
+cockpit_v2/
+*.before-tasks-plaquette
