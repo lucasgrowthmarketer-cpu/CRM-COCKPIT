@@ -1,0 +1,295 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import api, { formatApiError } from '../lib/api';
+import { Button } from './ui/button';
+import { Badge } from './ui/badge';
+import {
+  Mail, Phone, Linkedin, Calendar as CalendarIcon, MoreHorizontal,
+  CheckCircle2, ArrowRight, ListTodo, Send, AlertTriangle,
+} from 'lucide-react';
+import { toast } from 'sonner';
+
+const CHANNEL_ICONS = {
+  email: Mail,
+  phone: Phone,
+  linkedin: Linkedin,
+  meeting: CalendarIcon,
+  other: MoreHorizontal,
+};
+
+const CATEGORY_LABELS = {
+  prospection: 'Prospection',
+  audit_production: 'Audit',
+  admin: 'Admin',
+  dev_tech: 'Dev',
+  content_seo: 'Content',
+  autre: 'Autre',
+};
+
+// Map current weekday to TodosPage values
+const DAYS_MAP = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+const todayKey = () => DAYS_MAP[new Date().getDay()];
+
+const formatTime = (iso) => {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  } catch { return ''; }
+};
+
+/**
+ * MesActionsCard
+ * Widget Dashboard qui melange :
+ *  - Tasks du jour (relances prospects, GET /tasks/today)
+ *  - Todos du jour (planning hebdo, GET /todos filtre sur jour courant et statut != termine)
+ */
+export default function MesActionsCard({ maxItems = 8 }) {
+  const [items, setItems] = useState([]);
+  const [stats, setStats] = useState({});
+  const [loading, setLoading] = useState(true);
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [tasksRes, todosRes, statsRes] = await Promise.all([
+        api.get('/tasks/today'),
+        api.get('/todos'),
+        api.get('/tasks/stats'),
+      ]);
+
+      // Normalize tasks
+      const tasks = (tasksRes.data || []).map((t) => ({
+        kind: 'task',
+        id: t.id,
+        title: t.title,
+        prospect: t.prospect,
+        contact: t.contact,
+        prospect_id: t.prospect_id,
+        channel: t.channel,
+        due_date: t.due_date,
+        priority: t.priority,
+        overdue: new Date(t.due_date) < new Date(),
+      }));
+
+      // Filter todos: today + not termine
+      const todayDayName = todayKey();
+      const allTodos = todosRes.data || [];
+      const todosToday = allTodos
+        .filter((t) => t.jour === todayDayName && t.statut !== 'termine')
+        .map((t) => ({
+          kind: 'todo',
+          id: t.id,
+          title: t.titre,
+          category: t.categorie,
+          status: t.statut,
+          assigne: t.assigne,
+          entreprise_id: t.entreprise_id,
+          entreprise_nom: t.entreprise_nom,
+        }));
+
+      // Merge: tasks first (have due_date), then todos
+      // Tasks overdue first, then today, then todos
+      const merged = [
+        ...tasks.filter((t) => t.overdue),
+        ...tasks.filter((t) => !t.overdue),
+        ...todosToday,
+      ];
+
+      setItems(merged);
+      setStats(statsRes.data || {});
+    } catch (e) {
+      // Silent fail - endpoints peuvent ne pas etre dispo
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  const completeTask = async (taskId) => {
+    try {
+      await api.post(`/tasks/${taskId}/complete`, { create_followup: false });
+      toast.success('Tâche faite');
+      fetchAll();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  };
+
+  const completeTodo = async (todoId) => {
+    try {
+      await api.put(`/todos/${todoId}`, { statut: 'termine' });
+      toast.success('Todo terminé');
+      fetchAll();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  };
+
+  const visible = items.slice(0, maxItems);
+  const more = items.length - maxItems;
+
+  return (
+    <div className="bg-white rounded-lg border border-brand-border p-5 mb-5" data-testid="mes-actions-card">
+      <div className="flex items-start justify-between mb-3">
+        <div>
+          <div className="font-jetbrains text-[10px] text-brand-primary uppercase tracking-wider font-semibold mb-0.5">
+            Mes actions du jour
+          </div>
+          <h2 className="font-manrope font-bold text-lg text-brand-text-primary">
+            {items.length === 0 && !loading ? "Tout est traité 👌" : `${items.length} action${items.length > 1 ? 's' : ''} à faire`}
+          </h2>
+        </div>
+        <Link to="/tasks" className="text-xs font-medium text-brand-primary hover:underline mt-1 shrink-0">
+          Tout voir →
+        </Link>
+      </div>
+
+      {/* Inline mini-stats */}
+      {(stats.overdue > 0 || stats.this_week > 0 || stats.completed_today > 0) && (
+        <div className="flex flex-wrap gap-3 mb-3 font-jetbrains text-[11px] text-brand-text-secondary">
+          {stats.overdue > 0 && (
+            <span className="text-red-600">
+              <AlertTriangle className="inline w-3 h-3 mr-1" />
+              <strong>{stats.overdue}</strong> en retard
+            </span>
+          )}
+          {stats.this_week > 0 && (
+            <span><strong>{stats.this_week}</strong> cette semaine</span>
+          )}
+          {stats.completed_today > 0 && (
+            <span className="text-green-600">
+              <CheckCircle2 className="inline w-3 h-3 mr-1" />
+              <strong>{stats.completed_today}</strong> faites aujourd'hui
+            </span>
+          )}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-center py-7 text-sm text-brand-text-secondary">Chargement…</div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-7 text-sm text-brand-text-secondary">
+          Pas d'action prévue aujourd'hui.<br />
+          <Link to="/tasks" className="text-brand-primary hover:underline">
+            Planifier une nouvelle tâche →
+          </Link>
+        </div>
+      ) : (
+        <>
+          <ul className="space-y-1.5">
+            {visible.map((item) => (
+              <li key={`${item.kind}-${item.id}`}>
+                {item.kind === 'task' ? (
+                  <TaskRow item={item} onDone={() => completeTask(item.id)} />
+                ) : (
+                  <TodoRow item={item} onDone={() => completeTodo(item.id)} />
+                )}
+              </li>
+            ))}
+          </ul>
+          {more > 0 && (
+            <Link
+              to="/tasks"
+              className="block text-center mt-3 text-xs font-medium text-brand-primary hover:underline"
+            >
+              + {more} autre{more > 1 ? 's' : ''} →
+            </Link>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function TaskRow({ item, onDone }) {
+  const Icon = CHANNEL_ICONS[item.channel] || MoreHorizontal;
+  return (
+    <div
+      className={`flex items-center gap-2 p-2 rounded-md border ${
+        item.overdue ? 'border-orange-200 bg-orange-50/50' : 'border-brand-border bg-white'
+      }`}
+      data-testid={`action-task-${item.id}`}
+    >
+      <span className="font-jetbrains text-[11px] text-brand-text-secondary font-medium w-10 shrink-0">
+        {formatTime(item.due_date)}
+      </span>
+      <div className="w-7 h-7 rounded-full bg-brand-primary text-white flex items-center justify-center shrink-0">
+        <Icon className="w-3.5 h-3.5" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-semibold text-brand-text-primary truncate flex items-center gap-1.5">
+          <Send className="w-3 h-3 text-brand-primary shrink-0" />
+          {item.title}
+        </div>
+        <div className="text-[11px] text-brand-text-secondary truncate">
+          {item.prospect?.nom || '—'}
+          {item.contact && <span> · {item.contact.prenom} {item.contact.nom}</span>}
+        </div>
+      </div>
+      {item.prospect_id && (
+        <Link
+          to={`/entreprises/${item.prospect_id}`}
+          className="text-brand-text-secondary hover:text-brand-primary"
+          title="Voir la fiche"
+        >
+          <ArrowRight className="w-4 h-4" />
+        </Link>
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 px-2 text-xs border-green-600 text-green-700 hover:bg-green-50"
+        onClick={onDone}
+        data-testid={`task-quick-done-${item.id}`}
+      >
+        ✓
+      </Button>
+    </div>
+  );
+}
+
+function TodoRow({ item, onDone }) {
+  return (
+    <div
+      className="flex items-center gap-2 p-2 rounded-md border border-brand-border bg-white"
+      data-testid={`action-todo-${item.id}`}
+    >
+      <span className="w-10 shrink-0" />
+      <div className="w-7 h-7 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center shrink-0">
+        <ListTodo className="w-3.5 h-3.5" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-semibold text-brand-text-primary truncate flex items-center gap-1.5">
+          {item.title}
+          <Badge variant="outline" className="text-[9px] py-0 h-4 font-normal">
+            {CATEGORY_LABELS[item.category] || 'Todo'}
+          </Badge>
+        </div>
+        <div className="text-[11px] text-brand-text-secondary truncate">
+          {item.entreprise_nom ? `${item.entreprise_nom} · ` : ''}
+          {item.assigne ? `Assigné à ${item.assigne}` : 'Planning du jour'}
+        </div>
+      </div>
+      <Link
+        to="/todos"
+        className="text-brand-text-secondary hover:text-brand-primary"
+        title="Voir la todo"
+      >
+        <ArrowRight className="w-4 h-4" />
+      </Link>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 px-2 text-xs border-green-600 text-green-700 hover:bg-green-50"
+        onClick={onDone}
+        data-testid={`todo-quick-done-${item.id}`}
+      >
+        ✓
+      </Button>
+    </div>
+  );
+}

@@ -22,6 +22,9 @@ import io
 import openpyxl
 import shutil
 
+# Modules tasks + plaquette (ajoute le 2026-04-30)
+from tasks_module import router as tasks_router, register_indexes as tasks_register_indexes, init as tasks_init
+from plaquette_routes import router as plaquette_router, init as plaquette_init
 # Upload dir for imports
 UPLOAD_DIR = Path("/tmp/industrial_imports")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -2682,6 +2685,7 @@ async def seed_data():
 @app.on_event("startup")
 async def startup():
     await seed_data()
+    await tasks_register_indexes(db)  # AJOUT - index MongoDB pour les tasks
     logger.info("Industrial Decision Cockpit started")
 
 
@@ -2689,6 +2693,14 @@ async def startup():
 async def shutdown():
     client.close()
 
+
+# Modules tasks + plaquette : on les attache a api_router (qui a deja prefix /api)
+# Init des modules - APRES la definition de db et get_current_user
+tasks_init(db, get_current_user)
+plaquette_init(get_current_user)
+
+api_router.include_router(tasks_router)
+api_router.include_router(plaquette_router)
 
 app.include_router(api_router)
 

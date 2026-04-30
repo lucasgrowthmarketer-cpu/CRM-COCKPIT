@@ -11,6 +11,7 @@ import {
   LayoutDashboard, Building2, Users, Target, GitBranch,
   Layers, FileText, User, Menu, LogOut, Lock,
   Flag, ClipboardList, Upload, Sun, Moon, Keyboard,
+  Send, Package,
 } from 'lucide-react';
 import useKeyboardShortcuts, { SHORTCUTS } from '../hooks/useKeyboardShortcuts';
 import api from '../lib/api';
@@ -18,11 +19,13 @@ import api from '../lib/api';
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/todos', label: 'Todos', icon: ClipboardList },
+  { path: '/tasks', label: 'Relances', icon: Send },
   { path: '/pipeline', label: 'Pipeline', icon: GitBranch },
   { path: '/entreprises', label: 'Entreprises', icon: Building2 },
   { path: '/contacts', label: 'Contacts', icon: Users },
   { path: '/opportunites', label: 'Opportunites', icon: Target },
   { path: '/objectifs', label: 'Objectifs', icon: Flag },
+  { path: '/offres', label: 'Offres', icon: Package },
   { path: '/templates', label: 'Templates', icon: FileText },
   { path: '/import', label: 'Import', icon: Upload },
   { path: '/secteurs', label: 'Secteurs', icon: Layers },
