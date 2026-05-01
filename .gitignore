@@ -20,3 +20,5 @@ cockpit_v2/
 
 # Frontend env local (URL Codespaces, ne pas commit)
 cockpit/frontend/.env.local
+facturation_module/
+*.before-facturation
