@@ -22,3 +22,10 @@ cockpit_v2/
 cockpit/frontend/.env.local
 facturation_module/
 *.before-facturation
+
+# Seed prospects v1 (one-shot, ne pas commit)
+seed_outreach/
+seed_outreach.zip
+fiche_emails_module/
+fiche_emails_module.zip
+*.before-fiche-emails

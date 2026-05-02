@@ -185,7 +185,7 @@ async def list_tasks(
     channel: Optional[str] = None,
     due_before: Optional[datetime] = None,
     due_after: Optional[datetime] = None,
-    limit: int = Query(200, le=500),
+    limit: int = Query(500, le=2000),
     user=Depends(get_current_user),
 ):
     q = {"user_id": user["id"]}

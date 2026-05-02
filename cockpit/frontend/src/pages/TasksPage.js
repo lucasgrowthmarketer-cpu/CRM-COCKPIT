@@ -92,7 +92,7 @@ export default function TasksPage() {
       else if (filter === 'upcoming') { url = '/tasks/upcoming'; params = { days: 7 }; }
       else if (filter === 'overdue') params = { status: 'pending', due_before: now };
       else if (filter === 'done') params = { status: 'done', limit: 100 };
-      else params = { limit: 300 };
+      else params = { limit: 1000 };
 
       const { data } = await api.get(url, { params });
       setTasks(data || []);

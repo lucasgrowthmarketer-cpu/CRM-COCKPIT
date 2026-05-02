@@ -14,6 +14,7 @@ import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
 import { useAuth } from '../contexts/AuthContext';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
+import EntrepriseEmailsBlock from '../components/EntrepriseEmailsBlock';
 
 const REGIONS = [
   "Auvergne-Rhone-Alpes","Bourgogne-Franche-Comte","Bretagne","Centre-Val de Loire",
@@ -325,6 +326,9 @@ export default function EntrepriseDetailPage() {
                 <TabsTrigger value="interactions" className="font-inter text-sm rounded-none border-b-2 border-transparent data-[state=active]:border-brand-primary data-[state=active]:text-brand-primary data-[state=active]:shadow-none px-4 py-3" data-testid="tab-interactions">
                   Interactions
                 </TabsTrigger>
+                <TabsTrigger value="emails" className="font-inter text-sm rounded-none border-b-2 border-transparent data-[state=active]:border-brand-primary data-[state=active]:text-brand-primary data-[state=active]:shadow-none px-4 py-3" data-testid="tab-emails">
+                  Emails
+                </TabsTrigger>
                 <TabsTrigger value="notes" className="font-inter text-sm rounded-none border-b-2 border-transparent data-[state=active]:border-brand-primary data-[state=active]:text-brand-primary data-[state=active]:shadow-none px-4 py-3" data-testid="tab-notes">
                   Notes
                 </TabsTrigger>
@@ -337,6 +341,12 @@ export default function EntrepriseDetailPage() {
               </TabsContent>
               <TabsContent value="interactions" className="p-6">
                 <InteractionsTab entrepriseId={id} user={user} />
+              </TabsContent>
+              <TabsContent value="emails" className="p-6">
+                <EntrepriseEmailsBlock
+                  entrepriseId={entreprise.id}
+                  entrepriseNom={entreprise.nom}
+                />
               </TabsContent>
               <TabsContent value="notes" className="p-6">
                 <div data-testid="notes-section">
