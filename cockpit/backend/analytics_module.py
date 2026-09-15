@@ -36,7 +36,7 @@ Retrocompatibilite : si ANALYTICS_SITES est absent, le module lit
 GSC_SITE_URL et GA4_PROPERTY_ID et cree un site unique "default".
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from datetime import datetime, timedelta, timezone, date
 from typing import Optional, List, Dict, Any
 import os
@@ -64,10 +64,18 @@ def init(database, auth_dependency):
     logger.info("analytics_module initialise")
 
 
-async def get_current_user(*args, **kwargs):
+async def get_current_user(request: Request) -> dict:
+    """
+    Proxy vers la dependency d'auth de server.py.
+
+    La signature doit correspondre exactement a celle de server.py :
+    FastAPI inspecte la signature des dependencies pour construire le
+    schema de la requete. Une signature generique (*args, **kwargs) serait
+    interpretee comme des query params obligatoires.
+    """
     if _real_get_current_user is None:
         raise HTTPException(status_code=503, detail="Module analytics non initialise")
-    return await _real_get_current_user(*args, **kwargs)
+    return await _real_get_current_user(request)
 
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
