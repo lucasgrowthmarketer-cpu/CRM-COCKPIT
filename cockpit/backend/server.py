@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import asyncio
 import logging
 import re
 import uuid
@@ -2687,13 +2688,75 @@ async def seed_data():
 
 
 # ==================== App Config ====================
+# Etat d'initialisation, expose par /api/health
+_init_state = {"db_ready": False, "attempts": 0, "last_error": None}
+
+
+async def _deferred_init():
+    """
+    Initialise la base en tache de fond, avec reprise automatique.
+
+    MongoDB peut mettre quelques secondes a accepter les connexions au
+    demarrage, et peut devenir temporairement indisponible en cours de vie.
+    En sortant ces operations du startup, l'application reste debout et
+    retente jusqu'a ce que la base reponde, au lieu de sortir en erreur
+    et d'entrainer une boucle de redemarrages.
+    """
+    delay = 2
+    for attempt in range(1, 21):
+        _init_state["attempts"] = attempt
+        try:
+            await db.command("ping")
+            await seed_data()
+            await tasks_register_indexes(db)
+            await analytics_register_indexes(db)
+            _init_state["db_ready"] = True
+            _init_state["last_error"] = None
+            logger.info(f"Initialisation MongoDB terminee (tentative {attempt})")
+            return
+        except Exception as e:
+            _init_state["db_ready"] = False
+            _init_state["last_error"] = str(e)
+            logger.warning(f"Initialisation MongoDB, tentative {attempt} : {e}")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60)
+
+    logger.error(
+        "Initialisation MongoDB abandonnee. L'application reste demarree ; "
+        "les routes touchant la base repondront en erreur jusqu'au retablissement."
+    )
+
+
 @app.on_event("startup")
 async def startup():
-    await seed_data()
-    await tasks_register_indexes(db)  # AJOUT - index MongoDB pour les tasks
-    await analytics_register_indexes(db)
+    # N'ouvre aucune connexion : sans risque meme si la base est absente
     analytics_init(db, get_current_user)
+    asyncio.create_task(_deferred_init())
     logger.info("Industrial Decision Cockpit started")
+
+
+@app.get("/api/health")
+async def health_check():
+    """
+    Etat reel du service. Utilisable comme Healthcheck Path sur Railway.
+
+    Repond 200 tant que l'application tourne, meme si la base n'est pas
+    encore prete : c'est le champ database qui porte l'information.
+    """
+    try:
+        await db.command("ping")
+        db_status = "connecte"
+        _init_state["db_ready"] = True
+    except Exception as e:
+        db_status = f"indisponible : {e}"
+
+    return {
+        "status": "actif",
+        "database": db_status,
+        "initialise": _init_state["db_ready"],
+        "tentatives": _init_state["attempts"],
+        "derniere_erreur": _init_state["last_error"],
+    }
 
 
 @app.on_event("shutdown")

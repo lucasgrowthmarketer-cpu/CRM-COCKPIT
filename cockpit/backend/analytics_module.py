@@ -962,6 +962,61 @@ async def list_snapshots(
 
 
 # ============================================================
+# Insights SEO
+# ============================================================
+
+
+@router.get("/insights")
+async def analytics_insights(
+    period: str = Query("28d"),
+    site_id: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """
+    Lecture actionnable des donnees Search Console.
+
+    Compare la periode demandee a la precedente pour degager les
+    progressions, les chutes, les gains rapides accessibles et les
+    pages qui sous-performent en taux de clic.
+    """
+    from analytics_insights import build_insights
+
+    site = _get_site(site_id)
+    site_url = _require_gsc(site)
+
+    start, end = _resolve_period(period, lag=GSC_LAG_DAYS)
+    prev_start, prev_end = _previous_period(start, end)
+
+    # Les quatre jeux de donnees necessaires, en parallele
+    q_curr_rows, q_prev_rows, p_curr_rows, p_prev_rows = await asyncio.gather(
+        _gsc_query(site_url, start, end, dimensions=["query"], row_limit=500),
+        _gsc_query(site_url, prev_start, prev_end, dimensions=["query"], row_limit=500),
+        _gsc_query(site_url, start, end, dimensions=["page"], row_limit=250),
+        _gsc_query(site_url, prev_start, prev_end, dimensions=["page"], row_limit=250),
+    )
+
+    overview = await gsc_overview(period, site_id, user)
+
+    insights = build_insights(
+        overview=overview,
+        queries_current=_gsc_rows_to_items(q_curr_rows, "query"),
+        queries_previous=_gsc_rows_to_items(q_prev_rows, "query"),
+        pages_current=_gsc_rows_to_items(p_curr_rows, "page"),
+        pages_previous=_gsc_rows_to_items(p_prev_rows, "page"),
+    )
+
+    return {
+        "site_id": site["id"],
+        "site_label": site["label"],
+        "period": period,
+        "range": {"start": start, "end": end},
+        "previous_range": {"start": prev_start, "end": prev_end},
+        "overview": overview,
+        **insights,
+    }
+
+
+# ============================================================
 # Index Mongo
 # ============================================================
 
