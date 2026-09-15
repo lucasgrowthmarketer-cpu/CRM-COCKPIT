@@ -20,6 +20,7 @@ import ImportPage from "./pages/ImportPage";
 import PipelinePage from "./pages/PipelinePage";
 import TemplatesPage from "./pages/TemplatesPage";
 import ProfilPage from "./pages/ProfilPage";
+import AnalyticsPage from "./pages/AnalyticsPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 
 function ProtectedRoute({ children }) {
@@ -72,6 +73,7 @@ function AppRoutes() {
       <Route path="/offres" element={<ProtectedRoute><OffresCataloguePage /></ProtectedRoute>} />
       <Route path="/facturation" element={<ProtectedRoute><FacturationPage /></ProtectedRoute>} />
       <Route path="/profil" element={<ProtectedRoute><ProfilPage /></ProtectedRoute>} />
+      <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

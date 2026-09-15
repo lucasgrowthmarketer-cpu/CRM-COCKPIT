@@ -25,6 +25,11 @@ import shutil
 # Modules tasks + plaquette (ajoute le 2026-04-30)
 from tasks_module import router as tasks_router, register_indexes as tasks_register_indexes, init as tasks_init
 from plaquette_routes import router as plaquette_router, init as plaquette_init
+from analytics_module import (
+    router as analytics_router,
+    register_indexes as analytics_register_indexes,
+    init as analytics_init,
+)
 # Upload dir for imports
 UPLOAD_DIR = Path("/tmp/industrial_imports")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -2686,6 +2691,8 @@ async def seed_data():
 async def startup():
     await seed_data()
     await tasks_register_indexes(db)  # AJOUT - index MongoDB pour les tasks
+    await analytics_register_indexes(db)
+    analytics_init(db, get_current_user)
     logger.info("Industrial Decision Cockpit started")
 
 
@@ -2700,6 +2707,7 @@ tasks_init(db, get_current_user)
 plaquette_init(get_current_user)
 
 api_router.include_router(tasks_router)
+api_router.include_router(analytics_router)
 api_router.include_router(plaquette_router)
 
 app.include_router(api_router)

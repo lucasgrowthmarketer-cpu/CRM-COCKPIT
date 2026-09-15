@@ -11,13 +11,14 @@ import {
   LayoutDashboard, Building2, Users, Target, GitBranch,
   Layers, FileText, User, Menu, LogOut, Lock,
   Flag, ClipboardList, Upload, Sun, Moon, Keyboard,
-  Send, Package, Receipt,
+  Send, Package, Receipt, BarChart3,
 } from 'lucide-react';
 import useKeyboardShortcuts, { SHORTCUTS } from '../hooks/useKeyboardShortcuts';
 import api from '../lib/api';
 
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { path: '/todos', label: 'Todos', icon: ClipboardList },
   { path: '/tasks', label: 'Relances', icon: Send },
   { path: '/pipeline', label: 'Pipeline', icon: GitBranch },

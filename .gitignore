@@ -29,3 +29,6 @@ seed_outreach.zip
 fiche_emails_module/
 fiche_emails_module.zip
 *.before-fiche-emails
+analytics-install/
+*service-account*.json
+cockpit-analytics-*.json
